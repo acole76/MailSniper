@@ -1273,6 +1273,14 @@ function Get-GlobalAddressList{
 
         Password of the email account.
 
+    .PARAMETER StartRow
+
+        Row to start fetching from. (Default: 0)
+
+    .PARAMETER MaxRows
+
+        Maximum number of records to fetch per request.  (Default: 5000)
+
   
   .EXAMPLE
 
@@ -1304,7 +1312,15 @@ function Get-GlobalAddressList{
 
     [Parameter(Position = 4, Mandatory = $False)]
     [string]
-    $Password = ""
+    $Password = "",
+
+    [Parameter(Position = 5, Mandatory = $False)]
+    [string]
+    $StartRow = 0,
+
+    [Parameter(Position = 6, Mandatory = $False)]
+    [string]
+    $MaxRows = 5000
 
   )
     ## Choose to ignore any SSL Warning issues caused by Self Signed Certificates     
@@ -1435,33 +1451,54 @@ function Get-GlobalAddressList{
         $emailspre = @()
 
         Write-Output "[*] Now utilizing FindPeople to retrieve Global Address List"
-        
-        #Finally we connect to the FindPeople function using the AddressListId to gather the email addresses
-        $FindPeopleResults = Invoke-WebRequest -Uri $FindPeopleURL -Method POST -ContentType "application/json" -Body "{`"__type`":`"FindPeopleJsonRequest:#Exchange`",`"Header`":{`"__type`":`"JsonRequestHeaders:#Exchange`",`"RequestServerVersion`":`"Exchange2013`",`"TimeZoneContext`":{`"__type`":`"TimeZoneContext:#Exchange`",`"TimeZoneDefinition`":{`"__type`":`"TimeZoneDefinitionType:#Exchange`",`"Id`":`"Mountain Standard Time`"}}},`"Body`":{`"__type`":`"FindPeopleRequest:#Exchange`",`"IndexedPageItemView`":{`"__type`":`"IndexedPageView:#Exchange`",`"BasePoint`":`"Beginning`",`"Offset`":0,`"MaxEntriesReturned`":999999999},`"QueryString`":null,`"ParentFolderId`":{`"__type`":`"TargetFolderId:#Exchange`",`"BaseFolderId`":{`"__type`":`"AddressListId:#Exchange`",`"Id`":`"$AddressListId`"}},`"PersonaShape`":{`"__type`":`"PersonaResponseShape:#Exchange`",`"BaseShape`":`"Default`"},`"ShouldResolveOneOffEmailAddress`":false}}" -Headers @{"X-OWA-CANARY"="$CanaryCookie";"Action"="FindPeople"} -WebSession $owasession
-        $FPPreClean = @()
-        $FPPreClean = $FindPeopleResults.RawContent
-        $FPPreArray = $FPPreClean -split '"EmailAddress":"', 0, "simplematch"
-        $FPPreArray[0] = ""
-        $cleanarray = @()
-        foreach ($entry in $FPPreArray)
-        {
-            if ($entry -ne "")
+		
+		# setup variables for use in paging.
+        $recordsFound = $true
+        $start = $StartRow
+        $maxRows = $MaxRows
+
+        while ($recordsFound) {
+            #Finally we connect to the FindPeople function using the AddressListId to gather the email addresses
+            $FindPeopleResults = Invoke-WebRequest -Uri $FindPeopleURL -Method POST -ContentType "application/json" -Body "{`"__type`":`"FindPeopleJsonRequest:#Exchange`",`"Header`":{`"__type`":`"JsonRequestHeaders:#Exchange`",`"RequestServerVersion`":`"Exchange2013`",`"TimeZoneContext`":{`"__type`":`"TimeZoneContext:#Exchange`",`"TimeZoneDefinition`":{`"__type`":`"TimeZoneDefinitionType:#Exchange`",`"Id`":`"Mountain Standard Time`"}}},`"Body`":{`"__type`":`"FindPeopleRequest:#Exchange`",`"IndexedPageItemView`":{`"__type`":`"IndexedPageView:#Exchange`",`"BasePoint`":`"Beginning`",`"Offset`":$start,`"MaxEntriesReturned`":$maxRows},`"QueryString`":null,`"ParentFolderId`":{`"__type`":`"TargetFolderId:#Exchange`",`"BaseFolderId`":{`"__type`":`"AddressListId:#Exchange`",`"Id`":`"$AddressListId`"}},`"PersonaShape`":{`"__type`":`"PersonaResponseShape:#Exchange`",`"BaseShape`":`"Default`"},`"ShouldResolveOneOffEmailAddress`":false}}" -Headers @{"X-OWA-CANARY"="$CanaryCookie";"Action"="FindPeople"} -WebSession $owasession
+            
+            $start += $maxRows
+            
+			if($FindPeopleResults.RawContent.IndexOf("""ResultSet"":[]") -gt -1)
             {
-                $cleanarray += $entry
+				#if no results are returned, we've reached the end and can exit the loop.
+                $recordsFound = $false
+            }
+
+            if($recordsFound)
+            {
+                $FPPreClean = @()
+                $FPPreClean = $FindPeopleResults.RawContent
+                $FPPreArray = $FPPreClean -split '"EmailAddress":"', 0, "simplematch"
+                $FPPreArray[0] = ""
+                $cleanarray = @()
+                foreach ($entry in $FPPreArray)
+                {
+                    if ($entry -ne "")
+                    {
+                        $cleanarray += $entry
+                    }
+                }
+
+                foreach ($line2 in $cleanarray)
+                {
+                    $split3 = $line2 -split '","RoutingType"', 0, "simplematch"
+                    $emailspre += $split3[0]
+                }
+
+                Write-Output "[*] Now cleaning up the list..."
+                $GlobalAddressList = $emailspre | Sort-Object | Get-Unique
+                Write-Host -ForegroundColor "green" ("[*] Start = " + $start + ", Maxrows = " + $maxRows + ", Total Records = " + $GlobalAddressList.count)
             }
         }
 
-        foreach ($line2 in $cleanarray)
-        {
-            $split3 = $line2 -split '","RoutingType"', 0, "simplematch"
-            $emailspre += $split3[0]
-        }
-
-        Write-Output "[*] Now cleaning up the list..."
-        $GlobalAddressList = $emailspre | Sort-Object | Get-Unique
         Write-Output $GlobalAddressList
         Write-Host -ForegroundColor "green" ("[*] A total of " + $GlobalAddressList.count + " email addresses were retrieved")
-        
+
         #writing results to file
         If ($OutFile -ne "")
         {
